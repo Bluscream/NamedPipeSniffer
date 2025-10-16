@@ -1,3 +1,5 @@
+using System.Text;
+
 namespace NamedPipeSniffer;
 
 /// <summary>
@@ -46,7 +48,7 @@ public class NamedPipeInfo
 
     public string ToSection() {
         var sb = new StringBuilder();
-        sb.AppendLine(name);
+        sb.AppendLine(Name);
         sb.AppendLine($"\tFullPath: {FullPath}");
         sb.AppendLine($"\tCurrentInstances: {CurrentInstances}");
         sb.AppendLine($"\tMaxInstances: {MaxInstances}");
@@ -56,11 +58,11 @@ public class NamedPipeInfo
 
     public string ToCsvString(string d)
     {
-        var name = pipe.Name?.Replace(d, "%3B") ?? "";
-        var fullPath = pipe.FullPath?.Replace(d, "%3B") ?? "";
-        var currentInstances = pipe.CurrentInstances >= 0 ? pipe.CurrentInstances.ToString() : "";
-        var maxInstances = pipe.MaxInstances >= 0 ? pipe.MaxInstances.ToString() : "";
-        var securityDescriptor = pipe.SecurityDescriptor?.Replace(d, "%3B") ?? "";
-        return $"{Name}{d}{FullPath}{d}{CurrentInstances}{d}{MaxInstances}{d}{SecurityDescriptor}";
+        var name = Name?.Replace(d, "%3B") ?? "";
+        var fullPath = FullPath?.Replace(d, "%3B") ?? "";
+        var currentInstances = CurrentInstances >= 0 ? CurrentInstances.ToString() : "";
+        var maxInstances = MaxInstances >= 0 ? MaxInstances.ToString() : "";
+        var securityDescriptor = SecurityDescriptor?.Replace(d, "%3B") ?? "";
+        return $"{name}{d}{fullPath}{d}{currentInstances}{d}{maxInstances}{d}{securityDescriptor}";
     }
 }

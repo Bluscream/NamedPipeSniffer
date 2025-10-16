@@ -13,12 +13,13 @@ class Program
     private static List<Glob> FilterGlobs = new();
     private static bool IsRunning = true;
     private static int MonitorIntervalMs = 1000;
+    private static bool NoErrors = false;
     private static IPipeLister PipeLister = new DirectoryLister();
 
     static async Task<int> Main(string[] args)
     {
-        var patternsArgument = new Argument<string[]>(
-            name: "patterns",
+        var patternsOption = new Option<string[]>(
+            aliases: new[] { "--pattern", "-p" },
             description: "Glob patterns to filter pipes (e.g., *mojo* *chrome*)",
             getDefaultValue: () => new[] { "*" });
 
@@ -52,6 +53,10 @@ class Program
             aliases: new[] { "--csv", "-c" },
             description: "Output in CSV format");
 
+        var noErrorsOption = new Option<bool>(
+            aliases: new[] { "--no-errors", "-nx" },
+            description: "Hide connection errors (timeout, access denied, etc.)");
+
         var rootCommand = new RootCommand("Monitor and sniff Windows Named Pipes.\n\n" +
             "NOTES:\n" +
             "  - Named pipes are point-to-point communication channels\n" +
@@ -59,25 +64,26 @@ class Program
             "  - Data read from a pipe is consumed (not true passive sniffing)\n" +
             "  - Some pipes may reject connections due to permissions")
         {
-            patternsArgument,
+            patternsOption,
             intervalOption,
             noEventsOption,
             noMessagesOption,
             listOption,
             verboseOption,
             methodOption,
-            csvOption
+            csvOption,
+            noErrorsOption
         };
 
-        rootCommand.SetHandler(async (patterns, interval, noEvents, noMessages, listOnly, verbose, method, csv) =>
+        rootCommand.SetHandler(async (patterns, interval, noEvents, noMessages, listOnly, verbose, method, csv, noErrors) =>
         {
-            await RunMonitorAsync(patterns, interval, noEvents, noMessages, listOnly, verbose, method, csv);
-        }, patternsArgument, intervalOption, noEventsOption, noMessagesOption, listOption, verboseOption, methodOption, csvOption);
+            await RunMonitorAsync(patterns, interval, noEvents, noMessages, listOnly, verbose, method, csv, noErrors);
+        }, patternsOption, intervalOption, noEventsOption, noMessagesOption, listOption, verboseOption, methodOption, csvOption, noErrorsOption);
 
         return await rootCommand.InvokeAsync(args);
     }
 
-    static async Task RunMonitorAsync(string[] patterns, int interval, bool noEvents, bool noMessages, bool listOnly, bool verbose, string method, bool csv)
+    static async Task RunMonitorAsync(string[] patterns, int interval, bool noEvents, bool noMessages, bool listOnly, bool verbose, string method, bool csv, bool noErrors)
     {
         Console.CancelKeyPress += (s, e) =>
         {
@@ -99,6 +105,7 @@ class Program
         }
 
         MonitorIntervalMs = interval;
+        NoErrors = noErrors;
         FilterGlobs = patterns.Select(p => Glob.Parse(p, new GlobOptions { Evaluation = { CaseInsensitive = true } })).ToList();
 
         // Show header only in verbose mode or list mode
@@ -202,13 +209,19 @@ class Program
                     
                     if (!noEvents)
                     {
+                        WriteColor("[", ConsoleColor.DarkGray);
+                        WriteColor("+", ConsoleColor.Green);
+                        WriteColor("] ", ConsoleColor.DarkGray);
+                        WriteColor("New pipe detected: ", ConsoleColor.Gray);
+                        
                         if (pipeInfo.CurrentInstances >= 0 || pipeInfo.MaxInstances >= 0)
                         {
-                            WriteColorLine($"[+] New pipe detected: {pipeName} ({pipeInfo.CurrentInstances}/{pipeInfo.MaxInstances})", ConsoleColor.Green);
+                            WriteColor(pipeName, ConsoleColor.Cyan);
+                            WriteColorLine($" ({pipeInfo.CurrentInstances}/{pipeInfo.MaxInstances})", ConsoleColor.DarkCyan);
                         }
                         else
                         {
-                            WriteColorLine($"[+] New pipe detected: {pipeName}", ConsoleColor.Green);
+                            WriteColorLine(pipeName, ConsoleColor.Cyan);
                         }
                     }
                     
@@ -224,7 +237,11 @@ class Program
                 {
                     if (!noEvents)
                     {
-                        WriteColorLine($"[-] Pipe removed: {pipeName}", ConsoleColor.Red);
+                        WriteColor("[", ConsoleColor.DarkGray);
+                        WriteColor("-", ConsoleColor.Red);
+                        WriteColor("] ", ConsoleColor.DarkGray);
+                        WriteColor("Pipe removed: ", ConsoleColor.Gray);
+                        WriteColorLine(pipeName, ConsoleColor.DarkRed);
                     }
                     
                     if (ActiveMonitors.TryGetValue(pipeName, out var monitor))
@@ -264,7 +281,14 @@ class Program
             }
             catch (Exception ex)
             {
-                WriteColorLine($"[{pipeName}] Monitor error: {ex.Message}", ConsoleColor.DarkRed);
+                if (!NoErrors)
+                {
+                    WriteColor("[", ConsoleColor.DarkGray);
+                    WriteColor(pipeName, ConsoleColor.Red);
+                    WriteColor("] ", ConsoleColor.DarkGray);
+                    WriteColor("✗ ", ConsoleColor.Red);
+                    WriteColorLine($"Monitor error: {ex.Message}", ConsoleColor.DarkRed);
+                }
             }
         });
     }
@@ -323,26 +347,52 @@ class PipeMonitor : IDisposable
 
             if (!pipeClient.IsConnected)
             {
-                Program.WriteColorLine($"[{_pipeName}] Failed to connect (timeout)", ConsoleColor.DarkYellow);
+                if (!Program.NoErrors)
+                {
+                    Program.WriteColor("[", ConsoleColor.DarkGray);
+                    Program.WriteColor(_pipeName, ConsoleColor.Yellow);
+                    Program.WriteColorLine("] Failed to connect (timeout)", ConsoleColor.DarkYellow);
+                }
                 return;
             }
 
-            Program.WriteColorLine($"[{_pipeName}] ✓ Connected to pipe", ConsoleColor.Cyan);
+            Program.WriteColor("[", ConsoleColor.DarkGray);
+            Program.WriteColor(_pipeName, ConsoleColor.Cyan);
+            Program.WriteColor("] ", ConsoleColor.DarkGray);
+            Program.WriteColor("✓ ", ConsoleColor.Green);
+            Program.WriteColorLine("Connected to pipe", ConsoleColor.Gray);
 
             // Read from the pipe
             await ReadPipeAsync(pipeClient);
         }
         catch (TimeoutException)
         {
-            Program.WriteColorLine($"[{_pipeName}] Connection timeout (no server listening)", ConsoleColor.DarkGray);
+            if (!Program.NoErrors)
+            {
+                Program.WriteColor("[", ConsoleColor.DarkGray);
+                Program.WriteColor(_pipeName, ConsoleColor.DarkGray);
+                Program.WriteColorLine("] Connection timeout (no server listening)", ConsoleColor.DarkGray);
+            }
         }
         catch (UnauthorizedAccessException)
         {
-            Program.WriteColorLine($"[{_pipeName}] Access denied (insufficient permissions)", ConsoleColor.DarkYellow);
+            if (!Program.NoErrors)
+            {
+                Program.WriteColor("[", ConsoleColor.DarkGray);
+                Program.WriteColor(_pipeName, ConsoleColor.Yellow);
+                Program.WriteColor("] ", ConsoleColor.DarkGray);
+                Program.WriteColor("⚠ ", ConsoleColor.Yellow);
+                Program.WriteColorLine("Access denied (insufficient permissions)", ConsoleColor.DarkYellow);
+            }
         }
         catch (IOException ex)
         {
-            Program.WriteColorLine($"[{_pipeName}] I/O error: {ex.Message}", ConsoleColor.DarkGray);
+            if (!Program.NoErrors)
+            {
+                Program.WriteColor("[", ConsoleColor.DarkGray);
+                Program.WriteColor(_pipeName, ConsoleColor.DarkGray);
+                Program.WriteColorLine($"] I/O error: {ex.Message}", ConsoleColor.DarkGray);
+            }
         }
         catch (OperationCanceledException)
         {
@@ -350,7 +400,14 @@ class PipeMonitor : IDisposable
         }
         catch (Exception ex)
         {
-            Program.WriteColorLine($"[{_pipeName}] Error: {ex.GetType().Name} - {ex.Message}", ConsoleColor.DarkRed);
+            if (!Program.NoErrors)
+            {
+                Program.WriteColor("[", ConsoleColor.DarkGray);
+                Program.WriteColor(_pipeName, ConsoleColor.Red);
+                Program.WriteColor("] ", ConsoleColor.DarkGray);
+                Program.WriteColor("✗ ", ConsoleColor.Red);
+                Program.WriteColorLine($"Error: {ex.GetType().Name} - {ex.Message}", ConsoleColor.DarkRed);
+            }
         }
     }
 
@@ -368,7 +425,9 @@ class PipeMonitor : IDisposable
                 
                 if (bytesRead == 0)
                 {
-                    Program.WriteColorLine($"[{_pipeName}] Pipe closed by server", ConsoleColor.DarkGray);
+                    Program.WriteColor("[", ConsoleColor.DarkGray);
+                    Program.WriteColor(_pipeName, ConsoleColor.DarkGray);
+                    Program.WriteColorLine("] Pipe closed by server", ConsoleColor.DarkGray);
                     break;
                 }
 
@@ -380,12 +439,26 @@ class PipeMonitor : IDisposable
                 
                 if (text != null)
                 {
-                    Program.WriteColorLine($"[{timestamp}] [{_pipeName}] Text ({bytesRead} bytes):", ConsoleColor.Magenta);
+                    Program.WriteColor("[", ConsoleColor.DarkGray);
+                    Program.WriteColor(timestamp, ConsoleColor.DarkCyan);
+                    Program.WriteColor("] [", ConsoleColor.DarkGray);
+                    Program.WriteColor(_pipeName, ConsoleColor.Cyan);
+                    Program.WriteColor("] ", ConsoleColor.DarkGray);
+                    Program.WriteColor("📝 ", ConsoleColor.Blue);
+                    Program.WriteColor("Text ", ConsoleColor.Magenta);
+                    Program.WriteColorLine($"({bytesRead} bytes):", ConsoleColor.DarkMagenta);
                     Program.WriteColorLine($"  {text}", ConsoleColor.White);
                 }
                 else
                 {
-                    Program.WriteColorLine($"[{timestamp}] [{_pipeName}] Binary ({bytesRead} bytes):", ConsoleColor.Magenta);
+                    Program.WriteColor("[", ConsoleColor.DarkGray);
+                    Program.WriteColor(timestamp, ConsoleColor.DarkCyan);
+                    Program.WriteColor("] [", ConsoleColor.DarkGray);
+                    Program.WriteColor(_pipeName, ConsoleColor.Cyan);
+                    Program.WriteColor("] ", ConsoleColor.DarkGray);
+                    Program.WriteColor("📦 ", ConsoleColor.DarkYellow);
+                    Program.WriteColor("Binary ", ConsoleColor.Magenta);
+                    Program.WriteColorLine($"({bytesRead} bytes):", ConsoleColor.DarkMagenta);
                     Program.WriteColorLine($"  {BitConverter.ToString(data.ToArray()).Replace("-", " ")}", ConsoleColor.DarkGray);
                 }
             }
@@ -396,7 +469,12 @@ class PipeMonitor : IDisposable
         }
         catch (IOException ex)
         {
-            Program.WriteColorLine($"[{_pipeName}] Disconnected: {ex.Message}", ConsoleColor.DarkGray);
+            if (!Program.NoErrors)
+            {
+                Program.WriteColor("[", ConsoleColor.DarkGray);
+                Program.WriteColor(_pipeName, ConsoleColor.DarkGray);
+                Program.WriteColorLine($"] Disconnected: {ex.Message}", ConsoleColor.DarkGray);
+            }
         }
     }
 
