@@ -1,0 +1,1 @@
+build.ps1 -Repo NamedPipeSniffer -Branch main -Git -Release -Delete -Github
