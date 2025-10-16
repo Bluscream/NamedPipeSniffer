@@ -13,15 +13,19 @@ class Program
     private static List<Glob> FilterGlobs = new();
     private static bool IsRunning = true;
     private static int MonitorIntervalMs = 1000;
-    private static bool NoErrors = false;
+    internal static bool NoErrors = false;
+    internal static bool NoLog = false;
     private static IPipeLister PipeLister = new DirectoryLister();
 
     static async Task<int> Main(string[] args)
     {
         var patternsOption = new Option<string[]>(
             aliases: new[] { "--pattern", "-p" },
-            description: "Glob patterns to filter pipes (e.g., *mojo* *chrome*)",
-            getDefaultValue: () => new[] { "*" });
+            description: "Glob patterns to filter pipes (e.g., -p *mojo* -p *chrome*)",
+            getDefaultValue: () => new[] { "*" })
+        {
+            AllowMultipleArgumentsPerToken = false
+        };
 
         var intervalOption = new Option<int>(
             aliases: new[] { "--interval", "-i" },
@@ -57,6 +61,10 @@ class Program
             aliases: new[] { "--no-errors", "-nx" },
             description: "Hide connection errors (timeout, access denied, etc.)");
 
+        var noLogOption = new Option<bool>(
+            aliases: new[] { "--no-log", "-nl" },
+            description: "Hide connection and disconnection messages");
+
         var rootCommand = new RootCommand("Monitor and sniff Windows Named Pipes.\n\n" +
             "NOTES:\n" +
             "  - Named pipes are point-to-point communication channels\n" +
@@ -72,18 +80,30 @@ class Program
             verboseOption,
             methodOption,
             csvOption,
-            noErrorsOption
+            noErrorsOption,
+            noLogOption
         };
 
-        rootCommand.SetHandler(async (patterns, interval, noEvents, noMessages, listOnly, verbose, method, csv, noErrors) =>
+        rootCommand.SetHandler(async (context) =>
         {
-            await RunMonitorAsync(patterns, interval, noEvents, noMessages, listOnly, verbose, method, csv, noErrors);
-        }, patternsOption, intervalOption, noEventsOption, noMessagesOption, listOption, verboseOption, methodOption, csvOption, noErrorsOption);
+            var patterns = context.ParseResult.GetValueForOption(patternsOption);
+            var interval = context.ParseResult.GetValueForOption(intervalOption);
+            var noEvents = context.ParseResult.GetValueForOption(noEventsOption);
+            var noMessages = context.ParseResult.GetValueForOption(noMessagesOption);
+            var listOnly = context.ParseResult.GetValueForOption(listOption);
+            var verbose = context.ParseResult.GetValueForOption(verboseOption);
+            var method = context.ParseResult.GetValueForOption(methodOption);
+            var csv = context.ParseResult.GetValueForOption(csvOption);
+            var noErrors = context.ParseResult.GetValueForOption(noErrorsOption);
+            var noLog = context.ParseResult.GetValueForOption(noLogOption);
+            
+            await RunMonitorAsync(patterns!, interval, noEvents, noMessages, listOnly, verbose, method!, csv, noErrors, noLog);
+        });
 
         return await rootCommand.InvokeAsync(args);
     }
 
-    static async Task RunMonitorAsync(string[] patterns, int interval, bool noEvents, bool noMessages, bool listOnly, bool verbose, string method, bool csv, bool noErrors)
+    static async Task RunMonitorAsync(string[] patterns, int interval, bool noEvents, bool noMessages, bool listOnly, bool verbose, string method, bool csv, bool noErrors, bool noLog)
     {
         Console.CancelKeyPress += (s, e) =>
         {
@@ -106,6 +126,7 @@ class Program
 
         MonitorIntervalMs = interval;
         NoErrors = noErrors;
+        NoLog = noLog;
         FilterGlobs = patterns.Select(p => Glob.Parse(p, new GlobOptions { Evaluation = { CaseInsensitive = true } })).ToList();
 
         // Show header only in verbose mode or list mode
@@ -131,7 +152,7 @@ class Program
             }
             WriteColorLine("Press Ctrl+C to exit\n", ConsoleColor.Gray);
             Console.WriteLine();
-            WriteColorLine($"Found {initialPipes.Count} pipe(s) matching filter:\n", ConsoleColor.Yellow);
+            WriteColorLine($"Found {initialPipes.Count} pipe(s) matching filter", ConsoleColor.Yellow);
             Console.WriteLine();
         }
 
@@ -356,11 +377,14 @@ class PipeMonitor : IDisposable
                 return;
             }
 
-            Program.WriteColor("[", ConsoleColor.DarkGray);
-            Program.WriteColor(_pipeName, ConsoleColor.Cyan);
-            Program.WriteColor("] ", ConsoleColor.DarkGray);
-            Program.WriteColor("✓ ", ConsoleColor.Green);
-            Program.WriteColorLine("Connected to pipe", ConsoleColor.Gray);
+            if (!Program.NoLog)
+            {
+                Program.WriteColor("[", ConsoleColor.DarkGray);
+                Program.WriteColor(_pipeName, ConsoleColor.Cyan);
+                Program.WriteColor("] ", ConsoleColor.DarkGray);
+                Program.WriteColor("✓ ", ConsoleColor.Green);
+                Program.WriteColorLine("Connected to pipe", ConsoleColor.Gray);
+            }
 
             // Read from the pipe
             await ReadPipeAsync(pipeClient);
@@ -425,9 +449,12 @@ class PipeMonitor : IDisposable
                 
                 if (bytesRead == 0)
                 {
-                    Program.WriteColor("[", ConsoleColor.DarkGray);
-                    Program.WriteColor(_pipeName, ConsoleColor.DarkGray);
-                    Program.WriteColorLine("] Pipe closed by server", ConsoleColor.DarkGray);
+                    if (!Program.NoLog)
+                    {
+                        Program.WriteColor("[", ConsoleColor.DarkGray);
+                        Program.WriteColor(_pipeName, ConsoleColor.DarkGray);
+                        Program.WriteColorLine("] Pipe closed by server", ConsoleColor.DarkGray);
+                    }
                     break;
                 }
 
@@ -469,7 +496,7 @@ class PipeMonitor : IDisposable
         }
         catch (IOException ex)
         {
-            if (!Program.NoErrors)
+            if (!Program.NoErrors && !Program.NoLog)
             {
                 Program.WriteColor("[", ConsoleColor.DarkGray);
                 Program.WriteColor(_pipeName, ConsoleColor.DarkGray);
