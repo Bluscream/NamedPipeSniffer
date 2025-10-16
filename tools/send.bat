@@ -1,0 +1,1 @@
+cls & p: & cd "P:\Visual Studio\source\repos\PipeSniffer\bin\" & NamedPipeSniffer.standalone.win-x64.release.exe --verbose --message "Hello, World!"
