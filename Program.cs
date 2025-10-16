@@ -6,19 +6,32 @@ using NamedPipeSniffer.Listers;
 
 namespace NamedPipeSniffer;
 
+class ProgramSettings
+{
+    public string[] Patterns { get; set; } = new[] { "*" };
+    public int Interval { get; set; } = 1000;
+    public bool NoEvents { get; set; }
+    public bool NoMessages { get; set; }
+    public bool ListOnly { get; set; }
+    public bool Verbose { get; set; }
+    public string Method { get; set; } = "directory";
+    public bool Csv { get; set; }
+    public bool NoErrors { get; set; }
+    public bool NoLog { get; set; }
+}
+
 class Program
 {
     private static readonly object ConsoleLock = new();
     private static readonly Dictionary<string, PipeMonitor> ActiveMonitors = new();
     private static List<Glob> FilterGlobs = new();
     private static bool IsRunning = true;
-    private static int MonitorIntervalMs = 1000;
-    internal static bool NoErrors = false;
-    internal static bool NoLog = false;
+    internal static ProgramSettings Settings = new();
     private static IPipeLister PipeLister = new DirectoryLister();
 
     static async Task<int> Main(string[] args)
     {
+        // === Filtering Options ===
         var patternsOption = new Option<string[]>(
             aliases: new[] { "--pattern", "-p" },
             description: "Glob patterns to filter pipes (e.g., -p *mojo* -p *chrome*)",
@@ -27,6 +40,25 @@ class Program
             AllowMultipleArgumentsPerToken = false
         };
 
+        // === Listing/Output Options ===
+        var methodOption = new Option<string>(
+            aliases: new[] { "--method", "-m" },
+            description: "Pipe listing method: directory (default), native (NtQueryDirectoryFile), pipelist (Sysinternals)",
+            getDefaultValue: () => "directory");
+
+        var listOption = new Option<bool>(
+            aliases: new[] { "--list", "-l" },
+            description: "List matching pipes and exit (don't monitor)");
+
+        var verboseOption = new Option<bool>(
+            aliases: new[] { "--verbose", "-v" },
+            description: "Show verbose output (startup info, filter details, etc.)");
+
+        var csvOption = new Option<bool>(
+            aliases: new[] { "--csv", "-c" },
+            description: "Output in CSV format");
+
+        // === Monitoring Options ===
         var intervalOption = new Option<int>(
             aliases: new[] { "--interval", "-i" },
             description: "Pipe scan interval in milliseconds",
@@ -40,23 +72,7 @@ class Program
             aliases: new[] { "--no-messages", "-nm" },
             description: "Don't connect to pipes or read messages (list mode only)");
 
-        var listOption = new Option<bool>(
-            aliases: new[] { "--list", "-l" },
-            description: "List matching pipes and exit (don't monitor)");
-
-        var verboseOption = new Option<bool>(
-            aliases: new[] { "--verbose", "-v" },
-            description: "Show verbose output (startup info, filter details, etc.)");
-
-        var methodOption = new Option<string>(
-            aliases: new[] { "--method", "-m" },
-            description: "Pipe listing method: directory (default), native (NtQueryDirectoryFile), pipelist (Sysinternals)",
-            getDefaultValue: () => "directory");
-
-        var csvOption = new Option<bool>(
-            aliases: new[] { "--csv", "-c" },
-            description: "Output in CSV format");
-
+        // === Display Filtering Options ===
         var noErrorsOption = new Option<bool>(
             aliases: new[] { "--no-errors", "-nx" },
             description: "Hide connection errors (timeout, access denied, etc.)");
@@ -72,38 +88,45 @@ class Program
             "  - Data read from a pipe is consumed (not true passive sniffing)\n" +
             "  - Some pipes may reject connections due to permissions")
         {
+            // Filtering
             patternsOption,
+            // Listing/Output
+            methodOption,
+            listOption,
+            verboseOption,
+            csvOption,
+            // Monitoring
             intervalOption,
             noEventsOption,
             noMessagesOption,
-            listOption,
-            verboseOption,
-            methodOption,
-            csvOption,
+            // Display Filtering
             noErrorsOption,
             noLogOption
         };
 
         rootCommand.SetHandler(async (context) =>
         {
-            var patterns = context.ParseResult.GetValueForOption(patternsOption);
-            var interval = context.ParseResult.GetValueForOption(intervalOption);
-            var noEvents = context.ParseResult.GetValueForOption(noEventsOption);
-            var noMessages = context.ParseResult.GetValueForOption(noMessagesOption);
-            var listOnly = context.ParseResult.GetValueForOption(listOption);
-            var verbose = context.ParseResult.GetValueForOption(verboseOption);
-            var method = context.ParseResult.GetValueForOption(methodOption);
-            var csv = context.ParseResult.GetValueForOption(csvOption);
-            var noErrors = context.ParseResult.GetValueForOption(noErrorsOption);
-            var noLog = context.ParseResult.GetValueForOption(noLogOption);
+            Settings = new ProgramSettings
+            {
+                Patterns = context.ParseResult.GetValueForOption(patternsOption)!,
+                Interval = context.ParseResult.GetValueForOption(intervalOption),
+                NoEvents = context.ParseResult.GetValueForOption(noEventsOption),
+                NoMessages = context.ParseResult.GetValueForOption(noMessagesOption),
+                ListOnly = context.ParseResult.GetValueForOption(listOption),
+                Verbose = context.ParseResult.GetValueForOption(verboseOption),
+                Method = context.ParseResult.GetValueForOption(methodOption)!,
+                Csv = context.ParseResult.GetValueForOption(csvOption),
+                NoErrors = context.ParseResult.GetValueForOption(noErrorsOption),
+                NoLog = context.ParseResult.GetValueForOption(noLogOption)
+            };
             
-            await RunMonitorAsync(patterns!, interval, noEvents, noMessages, listOnly, verbose, method!, csv, noErrors, noLog);
+            await RunMonitorAsync();
         });
 
         return await rootCommand.InvokeAsync(args);
     }
 
-    static async Task RunMonitorAsync(string[] patterns, int interval, bool noEvents, bool noMessages, bool listOnly, bool verbose, string method, bool csv, bool noErrors, bool noLog)
+    static async Task RunMonitorAsync()
     {
         Console.CancelKeyPress += (s, e) =>
         {
@@ -112,44 +135,59 @@ class Program
         };
 
         // Select the pipe lister based on method
-        PipeLister = method.ToLowerInvariant() switch
+        PipeLister = Settings.Method.ToLowerInvariant() switch
         {
             "native" => new NativeLister(),
             "pipelist" => new PipeListLister(),
             _ => new DirectoryLister()
         };
 
-        if (verbose)
+        if (Settings.Verbose)
         {
             WriteColorLine($"Using method: {PipeLister.MethodName} - {PipeLister.Description}", ConsoleColor.Gray);
         }
 
-        MonitorIntervalMs = interval;
-        NoErrors = noErrors;
-        NoLog = noLog;
-        FilterGlobs = patterns.Select(p => Glob.Parse(p, new GlobOptions { Evaluation = { CaseInsensitive = true } })).ToList();
+        FilterGlobs = Settings.Patterns.Select(p => Glob.Parse(p, new GlobOptions { Evaluation = { CaseInsensitive = true } })).ToList();
 
         // Show header only in verbose mode or list mode
-        if (verbose)
+        if (Settings.Verbose)
         {
             WriteColorLine($"NamedPipeSniffer - Monitoring named pipes on {Environment.MachineName}", ConsoleColor.Cyan);
-            WriteColorLine($"Filter patterns: {string.Join(", ", patterns)}", ConsoleColor.Gray);
+            WriteColorLine($"Filter patterns: {string.Join(", ", Settings.Patterns)}", ConsoleColor.Gray);
         }
 
         // Get initial pipe listing
         var initialPipes = GetFilteredPipes();
 
         // Show mode info only in verbose mode
-        if (verbose)
+        if (Settings.Verbose)
         {
-            if (noEvents)
-            {
-                WriteColorLine("Mode: Events disabled", ConsoleColor.Gray);
-            }
-            if (noMessages)
-            {
-                WriteColorLine("Mode: Message monitoring disabled (list only)", ConsoleColor.Gray);
-            }
+            var modeInfo = new List<string>();
+            if (Settings.NoEvents)
+                modeInfo.Add("events disabled");
+            else
+                modeInfo.Add("events enabled");
+
+            if (Settings.NoMessages)
+                modeInfo.Add("message monitoring disabled (list only)");
+            else
+                modeInfo.Add("message monitoring enabled");
+
+            if (Settings.ListOnly)
+                modeInfo.Add("list only");
+            else
+                modeInfo.Add("monitoring");
+
+            if (Settings.Csv)
+                modeInfo.Add("csv output");
+            if (Settings.Verbose)
+                modeInfo.Add("verbose");
+            if (Settings.NoLog)
+                modeInfo.Add("logging disabled");
+            if (Settings.NoErrors)
+                modeInfo.Add("errors suppressed");
+
+            WriteColorLine("Modes: " + string.Join(", ", modeInfo), ConsoleColor.Gray);
             WriteColorLine("Press Ctrl+C to exit\n", ConsoleColor.Gray);
             Console.WriteLine();
             WriteColorLine($"Found {initialPipes.Count} pipe(s) matching filter", ConsoleColor.Yellow);
@@ -157,18 +195,18 @@ class Program
         }
 
         // List mode or verbose: show the full list
-        if (listOnly)
+        if (Settings.ListOnly)
         {
             foreach (var pipe in initialPipes.OrderBy(p => p.Name))
             {
-                if (csv) Console.WriteLine(pipe.ToCsvString(";"));
+                if (Settings.Csv) Console.WriteLine(pipe.ToCsvString(";"));
                 else Console.WriteLine(pipe.ToSection());
             }
             return;
         }
 
         // Start monitoring
-        var monitorTask = MonitorPipesAsync(noEvents, noMessages);
+        var monitorTask = MonitorPipesAsync();
 
         await monitorTask;
 
@@ -178,7 +216,7 @@ class Program
             monitor.Dispose();
         }
 
-        if (verbose)
+        if (Settings.Verbose)
         {
             WriteColorLine("\nShutdown complete.", ConsoleColor.Cyan);
         }
@@ -211,7 +249,7 @@ class Program
         }
     }
 
-    static async Task MonitorPipesAsync(bool noEvents, bool noMessages)
+    static async Task MonitorPipesAsync()
     {
         var previousPipes = new HashSet<string>();
 
@@ -228,7 +266,7 @@ class Program
                 {
                     var pipeInfo = currentPipeInfos.First(p => p.Name == pipeName);
                     
-                    if (!noEvents)
+                    if (!Settings.NoEvents)
                     {
                         WriteColor("[", ConsoleColor.DarkGray);
                         WriteColor("+", ConsoleColor.Green);
@@ -246,7 +284,7 @@ class Program
                         }
                     }
                     
-                    if (!noMessages)
+                    if (!Settings.NoMessages)
                     {
                         StartMonitoringPipe(pipeName);
                     }
@@ -256,7 +294,7 @@ class Program
                 var removedPipes = previousPipes.Except(currentPipes).ToList();
                 foreach (var pipeName in removedPipes)
                 {
-                    if (!noEvents)
+                    if (!Settings.NoEvents)
                     {
                         WriteColor("[", ConsoleColor.DarkGray);
                         WriteColor("-", ConsoleColor.Red);
@@ -274,12 +312,12 @@ class Program
 
                 previousPipes = currentPipes;
 
-                await Task.Delay(MonitorIntervalMs);
+                await Task.Delay(Settings.Interval);
             }
             catch (Exception ex)
             {
                 WriteColorLine($"Error in monitoring loop: {ex.Message}", ConsoleColor.Red);
-                await Task.Delay(MonitorIntervalMs);
+                await Task.Delay(Settings.Interval);
             }
         }
     }
@@ -302,7 +340,7 @@ class Program
             }
             catch (Exception ex)
             {
-                if (!NoErrors)
+                if (!Settings.NoErrors)
                 {
                     WriteColor("[", ConsoleColor.DarkGray);
                     WriteColor(pipeName, ConsoleColor.Red);
@@ -368,7 +406,7 @@ class PipeMonitor : IDisposable
 
             if (!pipeClient.IsConnected)
             {
-                if (!Program.NoErrors)
+                if (!Program.Settings.NoErrors)
                 {
                     Program.WriteColor("[", ConsoleColor.DarkGray);
                     Program.WriteColor(_pipeName, ConsoleColor.Yellow);
@@ -377,7 +415,7 @@ class PipeMonitor : IDisposable
                 return;
             }
 
-            if (!Program.NoLog)
+            if (!Program.Settings.NoLog)
             {
                 Program.WriteColor("[", ConsoleColor.DarkGray);
                 Program.WriteColor(_pipeName, ConsoleColor.Cyan);
@@ -391,7 +429,7 @@ class PipeMonitor : IDisposable
         }
         catch (TimeoutException)
         {
-            if (!Program.NoErrors)
+            if (!Program.Settings.NoErrors)
             {
                 Program.WriteColor("[", ConsoleColor.DarkGray);
                 Program.WriteColor(_pipeName, ConsoleColor.DarkGray);
@@ -400,7 +438,7 @@ class PipeMonitor : IDisposable
         }
         catch (UnauthorizedAccessException)
         {
-            if (!Program.NoErrors)
+            if (!Program.Settings.NoErrors)
             {
                 Program.WriteColor("[", ConsoleColor.DarkGray);
                 Program.WriteColor(_pipeName, ConsoleColor.Yellow);
@@ -411,7 +449,7 @@ class PipeMonitor : IDisposable
         }
         catch (IOException ex)
         {
-            if (!Program.NoErrors)
+            if (!Program.Settings.NoErrors)
             {
                 Program.WriteColor("[", ConsoleColor.DarkGray);
                 Program.WriteColor(_pipeName, ConsoleColor.DarkGray);
@@ -424,7 +462,7 @@ class PipeMonitor : IDisposable
         }
         catch (Exception ex)
         {
-            if (!Program.NoErrors)
+            if (!Program.Settings.NoErrors)
             {
                 Program.WriteColor("[", ConsoleColor.DarkGray);
                 Program.WriteColor(_pipeName, ConsoleColor.Red);
@@ -449,7 +487,7 @@ class PipeMonitor : IDisposable
                 
                 if (bytesRead == 0)
                 {
-                    if (!Program.NoLog)
+                    if (!Program.Settings.NoLog)
                     {
                         Program.WriteColor("[", ConsoleColor.DarkGray);
                         Program.WriteColor(_pipeName, ConsoleColor.DarkGray);
@@ -496,7 +534,7 @@ class PipeMonitor : IDisposable
         }
         catch (IOException ex)
         {
-            if (!Program.NoErrors && !Program.NoLog)
+            if (!Program.Settings.NoErrors && !Program.Settings.NoLog)
             {
                 Program.WriteColor("[", ConsoleColor.DarkGray);
                 Program.WriteColor(_pipeName, ConsoleColor.DarkGray);
