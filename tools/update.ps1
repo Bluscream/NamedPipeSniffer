@@ -1,1 +1,1 @@
-build.ps1 -Repo NamedPipeSniffer -Branch main -Git -Release -Debug -Github
+build.ps1 -Repo NamedPipeSniffer -Branch main -Git -Release -Debug -Github -Publish
