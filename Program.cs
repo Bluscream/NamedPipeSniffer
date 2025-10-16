@@ -48,6 +48,10 @@ class Program
             description: "Pipe listing method: directory (default), native (NtQueryDirectoryFile), pipelist (Sysinternals)",
             getDefaultValue: () => "directory");
 
+        var csvOption = new Option<bool>(
+            aliases: new[] { "--csv", "-c" },
+            description: "Output in CSV format");
+
         var rootCommand = new RootCommand("Monitor and sniff Windows Named Pipes.\n\n" +
             "NOTES:\n" +
             "  - Named pipes are point-to-point communication channels\n" +
@@ -61,18 +65,19 @@ class Program
             noMessagesOption,
             listOption,
             verboseOption,
-            methodOption
+            methodOption,
+            csvOption
         };
 
-        rootCommand.SetHandler(async (patterns, interval, noEvents, noMessages, listOnly, verbose, method) =>
+        rootCommand.SetHandler(async (patterns, interval, noEvents, noMessages, listOnly, verbose, method, csv) =>
         {
-            await RunMonitorAsync(patterns, interval, noEvents, noMessages, listOnly, verbose, method);
-        }, patternsArgument, intervalOption, noEventsOption, noMessagesOption, listOption, verboseOption, methodOption);
+            await RunMonitorAsync(patterns, interval, noEvents, noMessages, listOnly, verbose, method, csv);
+        }, patternsArgument, intervalOption, noEventsOption, noMessagesOption, listOption, verboseOption, methodOption, csvOption);
 
         return await rootCommand.InvokeAsync(args);
     }
 
-    static async Task RunMonitorAsync(string[] patterns, int interval, bool noEvents, bool noMessages, bool listOnly, bool verbose, string method)
+    static async Task RunMonitorAsync(string[] patterns, int interval, bool noEvents, bool noMessages, bool listOnly, bool verbose, string method, bool csv)
     {
         Console.CancelKeyPress += (s, e) =>
         {
@@ -128,7 +133,8 @@ class Program
         {
             foreach (var pipe in initialPipes.OrderBy(p => p.Name))
             {
-                Console.WriteLine(pipe.ToSection()); // pipe.ToCsvString(";")
+                if (csv) Console.WriteLine(pipe.ToCsvString(";"));
+                else Console.WriteLine(pipe.ToSection());
             }
             return;
         }
