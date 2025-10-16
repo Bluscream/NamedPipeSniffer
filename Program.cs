@@ -18,6 +18,7 @@ class ProgramSettings
     public bool Csv { get; set; }
     public bool NoErrors { get; set; }
     public bool NoLog { get; set; }
+    public string? SendMessage { get; set; }
 }
 
 class Program
@@ -81,6 +82,11 @@ class Program
             aliases: new[] { "--no-log", "-nl" },
             description: "Hide connection and disconnection messages");
 
+        // === Send Message Option ===
+        var messageOption = new Option<string?>(
+            aliases: new[] { "--message", "-msg" },
+            description: "Send a message to all matching pipes and exit");
+
         var rootCommand = new RootCommand("Monitor and sniff Windows Named Pipes.\n\n" +
             "NOTES:\n" +
             "  - Named pipes are point-to-point communication channels\n" +
@@ -101,7 +107,9 @@ class Program
             noMessagesOption,
             // Display Filtering
             noErrorsOption,
-            noLogOption
+            noLogOption,
+            // Send Message
+            messageOption
         };
 
         rootCommand.SetHandler(async (context) =>
@@ -117,7 +125,8 @@ class Program
                 Method = context.ParseResult.GetValueForOption(methodOption)!,
                 Csv = context.ParseResult.GetValueForOption(csvOption),
                 NoErrors = context.ParseResult.GetValueForOption(noErrorsOption),
-                NoLog = context.ParseResult.GetValueForOption(noLogOption)
+                NoLog = context.ParseResult.GetValueForOption(noLogOption),
+                SendMessage = context.ParseResult.GetValueForOption(messageOption)
             };
             
             await RunMonitorAsync();
@@ -205,6 +214,13 @@ class Program
             return;
         }
 
+        // Send message mode: send message to all pipes and exit
+        if (!string.IsNullOrEmpty(Settings.SendMessage))
+        {
+            await SendMessageToPipesAsync(initialPipes, Settings.SendMessage);
+            return;
+        }
+
         // Start monitoring
         var monitorTask = MonitorPipesAsync();
 
@@ -220,6 +236,80 @@ class Program
         {
             WriteColorLine("\nShutdown complete.", ConsoleColor.Cyan);
         }
+    }
+
+    static async Task SendMessageToPipesAsync(List<NamedPipeInfo> pipes, string message)
+    {
+        WriteColorLine($"\nSending message to {pipes.Count} pipe(s) in parallel...\n", ConsoleColor.Yellow);
+        
+        var messageBytes = Encoding.UTF8.GetBytes(message);
+        var successCount = 0;
+        var failCount = 0;
+        var countLock = new object();
+
+        var tasks = pipes.Select(async pipeInfo =>
+        {
+            try
+            {
+                using var pipeClient = new NamedPipeClientStream(".", pipeInfo.Name, PipeDirection.Out);
+                await pipeClient.ConnectAsync(2000);
+
+                if (pipeClient.IsConnected)
+                {
+                    await pipeClient.WriteAsync(messageBytes);
+                    await pipeClient.FlushAsync();
+                    
+                    WriteColor("[", ConsoleColor.DarkGray);
+                    WriteColor("✓", ConsoleColor.Green);
+                    WriteColor("] ", ConsoleColor.DarkGray);
+                    WriteColor(pipeInfo.Name, ConsoleColor.Cyan);
+                    WriteColorLine($" - Sent {messageBytes.Length} bytes", ConsoleColor.Gray);
+                    
+                    lock (countLock) successCount++;
+                }
+            }
+            catch (TimeoutException)
+            {
+                if (!Settings.NoErrors)
+                {
+                    WriteColor("[", ConsoleColor.DarkGray);
+                    WriteColor("⏱", ConsoleColor.DarkYellow);
+                    WriteColor("] ", ConsoleColor.DarkGray);
+                    WriteColor(pipeInfo.Name, ConsoleColor.DarkGray);
+                    WriteColorLine(" - Connection timeout", ConsoleColor.DarkGray);
+                }
+                lock (countLock) failCount++;
+            }
+            catch (UnauthorizedAccessException)
+            {
+                if (!Settings.NoErrors)
+                {
+                    WriteColor("[", ConsoleColor.DarkGray);
+                    WriteColor("⚠", ConsoleColor.Yellow);
+                    WriteColor("] ", ConsoleColor.DarkGray);
+                    WriteColor(pipeInfo.Name, ConsoleColor.Yellow);
+                    WriteColorLine(" - Access denied", ConsoleColor.DarkYellow);
+                }
+                lock (countLock) failCount++;
+            }
+            catch (Exception ex)
+            {
+                if (!Settings.NoErrors)
+                {
+                    WriteColor("[", ConsoleColor.DarkGray);
+                    WriteColor("✗", ConsoleColor.Red);
+                    WriteColor("] ", ConsoleColor.DarkGray);
+                    WriteColor(pipeInfo.Name, ConsoleColor.Red);
+                    WriteColorLine($" - Error: {ex.Message}", ConsoleColor.DarkRed);
+                }
+                lock (countLock) failCount++;
+            }
+        });
+
+        await Task.WhenAll(tasks);
+
+        Console.WriteLine();
+        WriteColorLine($"Summary: {successCount} succeeded, {failCount} failed", successCount > 0 ? ConsoleColor.Green : ConsoleColor.Yellow);
     }
 
     static List<NamedPipeInfo> GetFilteredPipes()
