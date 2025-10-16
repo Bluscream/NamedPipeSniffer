@@ -126,18 +126,9 @@ class Program
         // List mode or verbose: show the full list
         if (listOnly)
         {
-            
-            // Print CSV header
-            Console.WriteLine("Name;FullPath;CurrentInstances;MaxInstances;SecurityDescriptor");
             foreach (var pipe in initialPipes.OrderBy(p => p.Name))
             {
-                var name = pipe.Name?.Replace(";", "%3B") ?? "";
-                var fullPath = pipe.FullPath?.Replace(";", "%3B") ?? "";
-                var currentInstances = pipe.CurrentInstances >= 0 ? pipe.CurrentInstances.ToString() : "";
-                var maxInstances = pipe.MaxInstances >= 0 ? pipe.MaxInstances.ToString() : "";
-                var securityDescriptor = pipe.SecurityDescriptor?.Replace(";", "%3B") ?? "";
-
-                Console.WriteLine($"{name};{fullPath};{currentInstances};{maxInstances};{securityDescriptor}");
+                Console.WriteLine(pipe.ToSection()); // pipe.ToCsvString(";")
             }
             return;
         }
