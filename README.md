@@ -15,7 +15,7 @@ A .NET console application for monitoring and sniffing Windows Named Pipes.
 
 ## Screenshots
 
-<img width="500" src="https://github.com/user-attachments/assets/47adfd3e-e584-4304-8da8-8f196857f81f" />&nbsp;<img width="500" src="https://github.com/user-attachments/assets/d1b17d39-d6bb-4bc4-841f-03e1e67236a8" />
+<img width="400" src="https://github.com/user-attachments/assets/47adfd3e-e584-4304-8da8-8f196857f81f" />&nbsp;<img width="400" src="https://github.com/user-attachments/assets/d1b17d39-d6bb-4bc4-841f-03e1e67236a8" />
 
 
 ## Usage
